@@ -1,0 +1,6 @@
+psutil
+watchdog
+pywin32; platform_system=="Windows"
+#winsdk; platform_system=="Windows"
+httpx
+websockets

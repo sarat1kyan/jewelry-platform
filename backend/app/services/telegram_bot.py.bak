@@ -1,0 +1,78 @@
+import os, httpx
+from typing import List, Dict, Optional
+
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+CHAT_ID = os.getenv("TEAM_LEAD_CHAT_ID")
+
+def _post(method: str, payload: dict):
+    if not (BOT_TOKEN and CHAT_ID):
+        return None
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{method}"
+    try:
+        r = httpx.post(url, json=payload, timeout=10)  # отправляем JSON-тело
+        r.raise_for_status()
+        return r.json()
+    except Exception:
+        return None
+
+def send_to(chat_id: str, text: str, reply_markup=None):
+    payload = {'chat_id': chat_id, 'text': text}
+    if reply_markup:
+        payload['reply_markup'] = {'inline_keyboard': reply_markup}
+    _post('sendMessage', payload)
+
+def send_text(text: str):
+    if not (BOT_TOKEN and CHAT_ID):
+        return
+    _post("sendMessage", {"chat_id": CHAT_ID, "text": text})
+
+def notify_new_order(order, filename: str, suggestions: List[Dict], workers: List[Dict], monday_item: Optional[Dict]):
+    if not (BOT_TOKEN and CHAT_ID):
+        return
+
+    lines = [
+        "🆕 *New Order*",
+        f"*Client:* {order.customer_name}",
+        f"*Email:* {order.customer_email}",
+        f"*Filename:* `{filename}`",
+    ]
+    if getattr(order, "price", None):
+        lines.append(f"*Price:* ${order.price}")
+    if getattr(order, "instructions", ""):
+        lines.append(f"*Notes:* {order.instructions}")
+    text = "\n".join(lines)
+
+    # Собираем inline-кнопки
+    keyboard = []
+
+    # Top-3 workers -> callback_data (заработает, когда подключим webhook)
+    if workers:
+        row = []
+        for w in workers[:3]:
+            row.append({
+                "text": f"Assign to {w.get('user','?')}",
+                "callback_data": f"assign:{getattr(order,'id','')}:{w.get('agent_id','')}"
+            })
+        if row:
+            keyboard.append(row)
+
+    # First suggestion temp link
+    if suggestions:
+        url = suggestions[0].get("temp_link") or ""
+        if url:
+            keyboard.append([{"text": "View similar files", "url": url}])
+
+    # Monday board link
+    board_id = os.getenv("BOARD_ID", "")
+    if board_id:
+        keyboard.append([{"text": "Open in Monday", "url": f"https://view.monday.com/boards/{board_id}"}])
+
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": text,
+        
+    }
+    if keyboard:
+        payload["reply_markup"] = {"inline_keyboard": keyboard}
+
+    _post("sendMessage", payload)

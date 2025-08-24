@@ -1,0 +1,42 @@
+# backend/app/api/agents.py
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session
+
+from app.models.db import get_db
+from app.models.orm import Agent, Heartbeat
+from app.models.schemas import AgentRegisterIn, AgentRegisterOut, HeartbeatIn
+
+router = APIRouter()
+
+@router.post("/register", response_model=AgentRegisterOut)
+def register_agent(payload: AgentRegisterIn, db: Session = Depends(get_db)):
+    """
+    Register or update an agent (worker).
+    """
+    agent = db.query(Agent).filter(Agent.id == payload.agent_id).first()
+    if not agent:
+        agent = Agent(id=payload.agent_id, hostname=payload.hostname, user=payload.user)
+        db.add(agent)
+    else:
+        agent.hostname = payload.hostname
+        agent.user = payload.user
+
+    db.commit()
+    # If you issue JWTs, do it here. For now, keep a deterministic dummy.
+    return AgentRegisterOut(agent_id=agent.id, token="ok")
+
+@router.post("/heartbeat")
+def heartbeat(payload: HeartbeatIn, db: Session = Depends(get_db)):
+    """
+    Receive periodic agent status updates.
+    """
+    agent = db.query(Agent).filter(Agent.id == payload.agent_id).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail="unknown agent")
+
+    # Avoid double-passing agent_id (it’s already in the payload)
+    data = payload.model_dump(exclude={"agent_id"})
+    hb = Heartbeat(agent_id=payload.agent_id, **data)
+    db.add(hb)
+    db.commit()
+    return {"ok": True}

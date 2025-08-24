@@ -1,0 +1,44 @@
+from fastapi import APIRouter, Depends, HTTPException
+from app.models.schemas import AgentRegisterIn, AgentRegisterOut, HeartbeatIn, AgentEventIn
+from app.models.db import SessionLocal
+from app.models.orm import Agent, Heartbeat, Event
+from sqlalchemy.orm import Session
+from app.utils.security import create_agent_jwt
+from datetime import datetime
+
+router = APIRouter()
+
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+@router.post("/register", response_model=AgentRegisterOut)
+def register_agent(payload: AgentRegisterIn, db: Session = Depends(get_db)):
+    agent = Agent(agent_id=payload.agent_id, user=payload.user, hostname=payload.hostname)
+    db.merge(agent); db.commit()
+    token = create_agent_jwt(payload.agent_id)
+    return AgentRegisterOut(agent_id=payload.agent_id, token=token)
+
+@router.post("/heartbeat")
+def heartbeat(payload: HeartbeatIn, db: Session = Depends(get_db)):
+    agent = db.get(Agent, payload.agent_id)
+    if not agent:
+        raise HTTPException(404, "Agent not registered")
+    hb = Heartbeat(agent_id=payload.agent_id, **payload.model_dump())
+    db.add(hb)
+    agent.last_seen = datetime.utcnow()
+    agent.active_task_id = payload.active_task_id
+    agent.is_rhino_running = payload.is_rhino_running
+    agent.cpu_5m = payload.cpu_5m or 0.0
+    agent.idle_minutes = payload.idle_minutes or 0.0
+    db.commit()
+    return {"ok": True}
+
+@router.post("/event")
+def event(payload: AgentEventIn, db: Session = Depends(get_db)):
+    ev = Event(**payload.model_dump())
+    db.add(ev); db.commit()
+    return {"ok": True}

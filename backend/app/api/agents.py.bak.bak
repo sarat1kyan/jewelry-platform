@@ -1,0 +1,49 @@
+# app/api/agents.py
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.db import get_db
+from app.models.schemas import AgentRegisterIn, AgentRegisterOut, HeartbeatIn
+from app.models.orm import Agent, Heartbeat
+
+router = APIRouter(prefix="/api/agents", tags=["agents"])
+
+
+@router.post("/register", response_model=AgentRegisterOut)
+def register(payload: AgentRegisterIn, db: Session = Depends(get_db)):
+    """
+    Register a new agent (worker).
+    If agent already exists, update hostname/user.
+    """
+    agent = db.query(Agent).filter(Agent.id == payload.agent_id).first()
+    if not agent:
+        agent = Agent(id=payload.agent_id, hostname=payload.hostname, user=payload.user)
+        db.add(agent)
+    else:
+        agent.hostname = payload.hostname
+        agent.user = payload.user
+
+    db.commit()
+    db.refresh(agent)
+
+    return AgentRegisterOut(agent_id=agent.id, token="dummy-token")  # TODO: JWT
+
+
+@router.post("/heartbeat")
+def heartbeat(payload: HeartbeatIn, db: Session = Depends(get_db)):
+    """
+    Receive periodic agent status updates.
+    """
+    # Ensure agent exists
+    agent = db.query(Agent).filter(Agent.id == payload.agent_id).first()
+    if not agent:
+        return {"error": "unknown agent"}, 404
+
+    # Safe dict (drop agent_id, since we pass it explicitly)
+    data = payload.model_dump(exclude={"agent_id"})
+
+    hb = Heartbeat(agent_id=payload.agent_id, **data)
+    db.add(hb)
+    db.commit()
+
+    return {"ok": True}

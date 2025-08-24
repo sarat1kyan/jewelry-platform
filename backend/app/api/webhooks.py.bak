@@ -1,0 +1,90 @@
+from fastapi import APIRouter, Request
+from app.models.db import SessionLocal
+from app.models.orm import Order, Agent, Assignment
+from app.services.telegram_bot import send_to
+
+router = APIRouter()
+
+@router.post("/webhooks/telegram")
+async def telegram_webhook(request: Request):
+    upd = await request.json()
+    try:
+        # Inline callback: "assign:<order_id>:<agent_id>"
+        if 'callback_query' in upd:
+            cq = upd['callback_query']
+            chat_id = cq['message']['chat']['id']
+            data = (cq.get('data') or '')
+            if data.startswith('assign:'):
+                parts = data.split(':', 2)
+                order_id = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
+                agent_id = parts[2] if len(parts) > 2 else None
+                if order_id and agent_id:
+                    db = SessionLocal()
+                    try:
+                        db.add(Assignment(order_id=order_id, agent_id=agent_id, task_id=f"TASK-{order_id}"))
+                        ag = db.get(Agent, agent_id)
+                        if ag:
+                            ag.active_task_id = f"TASK-{order_id}"
+                        db.commit()
+                        send_to(chat_id, f"✅ Assigned order {order_id} to {agent_id}")
+                    finally:
+                        db.close()
+            return {"ok": True}
+
+        # Text commands
+        if 'message' in upd:
+            msg = upd['message']
+            chat_id = msg['chat']['id']
+            text = (msg.get('text') or '').strip()
+
+            if text.startswith('/orders'):
+                db = SessionLocal()
+                try:
+                    items = db.query(Order).order_by(Order.created_at.desc()).limit(5).all()
+                    if not items:
+                        send_to(chat_id, "No orders yet.")
+                    else:
+                        lines = ["Last 5 orders:"]
+                        for o in items:
+                            lines.append(f"#{o.id} {o.customer_name} — {o.canonical_filename}")
+                        send_to(chat_id, "\n".join(lines))
+                finally:
+                    db.close()
+
+            elif text.startswith('/workers'):
+                db = SessionLocal()
+                try:
+                    agents = db.query(Agent).all()
+                    if not agents:
+                        send_to(chat_id, "No agents registered.")
+                    else:
+                        lines = ["Workers:"]
+                        for a in agents:
+                            status = f"busy({a.active_task_id})" if a.active_task_id else "free"
+                            lines.append(f"{a.user or a.agent_id}: {status}, cpu={a.cpu_5m}, idle={a.idle_minutes}m")
+                        send_to(chat_id, "\n".join(lines))
+                finally:
+                    db.close()
+
+            elif text.startswith('/report'):
+                rng = 'daily'
+                if 'weekly' in text: rng = 'weekly'
+                elif 'monthly' in text: rng = 'monthly'
+                # Wire this to /api/reports later
+                send_to(chat_id, f"Report request accepted: {rng}")
+
+            else:
+                send_to(chat_id, "Commands: /orders, /workers, /report daily|weekly|monthly")
+
+            return {"ok": True}
+
+    except Exception:
+        # Avoid Telegram retry storms
+        return {"ok": True}
+
+    return {"ok": True}
+
+@router.post("/webhooks/monday")
+async def monday_webhook(request: Request):
+    _ = await request.json()
+    return {"ok": True}
